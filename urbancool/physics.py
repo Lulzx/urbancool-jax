@@ -8,6 +8,10 @@ from urbancool.lattice import (E_D2Q9, W_D2Q9, OPP_D2Q9, E_D2Q5, W_D2Q5,
                                OPP_D2Q5, REFL_Y_D2Q9, REFL_Y_D2Q5)
 
 EPS = 1e-12
+# Hard temperature bounds (spec guardrail 4). Inactive in normal regimes
+# (small source rates keep T near [0, 0.4]); they only trip under aggressive
+# optimisation transients, keeping Boussinesq forces bounded.
+T_MIN, T_MAX = -0.5, 2.0
 
 
 class SimConfig(NamedTuple):
@@ -45,7 +49,7 @@ def compute_g_eq(T, u_x, u_y):
 def compute_macroscopic(f, g, gamma, config, domain):
     """Return (rho, T, u_x, u_y) with buoyancy, canopy drag, Mach limiter."""
     rho = jnp.sum(f, axis=-1)
-    T = jnp.sum(g, axis=-1)
+    T = jnp.clip(jnp.sum(g, axis=-1), T_MIN, T_MAX)
     fluid_mask = 1.0 - domain.building_mask
     F_x = jnp.zeros_like(rho)
     F_y = rho * config.g_buoy * T * fluid_mask

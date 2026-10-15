@@ -68,8 +68,15 @@ def value_and_grad_fn(theta_raw, config, domain, burn_in_steps=100,
 def optimize_canopy_layout(solver=None, objective=DEFAULT_OBJECTIVE, theta_init=None,
                            config=None, domain=None, burn_in_steps=100,
                            outer_steps=10, inner_steps=10, opt_steps=30,
-                           learning_rate=0.1, grad_steps=None):
-    """Adam loop. Accepts either (solver, objective) or (config, domain)."""
+                           learning_rate=0.1, grad_steps=None, beta_schedule=None):
+    """Adam loop. Accepts either (solver, objective) or (config, domain).
+
+    ``beta_schedule`` optionally ramps the sigmoid sharpness ``beta``
+    (continuation method): ``opt_steps`` is split as evenly as possible
+    across the schedule values, e.g. ``(2, 4, 8, 16)`` pushes grey canopy
+    values toward crisp binary placements in later stages. ``None`` keeps
+    the fixed ``config.beta``.
+    """
     if solver is not None:
         config, domain = solver.config, solver.domain
     if grad_steps is not None:  # README-style alias: split grad window ~ sqrt
@@ -79,21 +86,29 @@ def optimize_canopy_layout(solver=None, objective=DEFAULT_OBJECTIVE, theta_init=
     optimizer = optax.adam(learning_rate)
     opt_state = optimizer.init(theta)
     history = {"loss": [], "mean_temp": [], "ped_temp": [], "ped_wind": [],
-               "ped_wind_max": [], "canopy_frac": []}
+               "ped_wind_max": [], "canopy_frac": [], "beta": []}
 
-    @jax.jit
-    def step(theta, opt_state):
-        (loss, aux), grads = value_and_grad_fn(
-            theta, config, domain, burn_in_steps, outer_steps, inner_steps, objective)
-        updates, opt_state = optimizer.update(grads, opt_state, theta)
-        return optax.apply_updates(theta, updates), opt_state, loss, aux
+    betas = [float(config.beta)] if beta_schedule is None else [float(b) for b in beta_schedule]
+    base, extra = divmod(int(opt_steps), len(betas))
+    stage_steps = [base + (1 if i < extra else 0) for i in range(len(betas))]
 
-    for _ in range(int(opt_steps)):
-        theta, opt_state, loss, aux = step(theta, opt_state)
-        history["loss"].append(float(loss))
-        history["mean_temp"].append(float(aux["ped_temp"]))
-        history["ped_temp"].append(float(aux["ped_temp"]))
-        history["ped_wind"].append(float(aux["ped_wind"]))
-        history["ped_wind_max"].append(float(aux["ped_wind_max"]))
-        history["canopy_frac"].append(float(aux["canopy_frac"]))
+    for beta, n_steps in zip(betas, stage_steps):
+        stage_config = config._replace(beta=beta)
+
+        @jax.jit
+        def step(theta, opt_state, _cfg=stage_config):
+            (loss, aux), grads = value_and_grad_fn(
+                theta, _cfg, domain, burn_in_steps, outer_steps, inner_steps, objective)
+            updates, opt_state = optimizer.update(grads, opt_state, theta)
+            return optax.apply_updates(theta, updates), opt_state, loss, aux
+
+        for _ in range(n_steps):
+            theta, opt_state, loss, aux = step(theta, opt_state)
+            history["loss"].append(float(loss))
+            history["mean_temp"].append(float(aux["ped_temp"]))
+            history["ped_temp"].append(float(aux["ped_temp"]))
+            history["ped_wind"].append(float(aux["ped_wind"]))
+            history["ped_wind_max"].append(float(aux["ped_wind_max"]))
+            history["canopy_frac"].append(float(aux["canopy_frac"]))
+            history["beta"].append(beta)
     return theta, history

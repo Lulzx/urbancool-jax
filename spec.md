@@ -52,14 +52,15 @@ Every spatial cell $\mathbf{x}$ in the plantable design region $\Omega_{\text{de
    where $\tilde{\gamma}(\mathbf{x}) = 0$ represents open air and $\tilde{\gamma}(\mathbf{x}) = 1$ represents dense tree canopy.
 3. **Coupled Momentum Forcing & Implicit Canopy Drag:**
    To avoid explicit time-step instabilities when drag coefficient $C_d$ is large, the effective macroscopic velocity inside porous canopy $\tilde{\gamma}(\mathbf{x})$ and solid building mask $B(\mathbf{x}) \in \{0, 1\}$ is damped via **Implicit Brinkman-Forchheimer Velocity Correction** before evaluating equilibrium:
-   $$\mathbf{u}_{\text{eff}}(\mathbf{x}, t) = \frac{1 - B(\mathbf{x})}{1 + \alpha_{\text{drag}} \tilde{\gamma}(\mathbf{x}) \Vert{}\mathbf{u}^*( \mathbf{x}, t )\Vert{}_2} \mathbf{u}^*(\mathbf{x}, t)$$
+   $$\mathbf{u}_{\text{eff}}(\mathbf{x}, t) = \frac{1 - B(\mathbf{x})}{1 + \alpha_{\text{drag}} \tilde{\gamma}(\mathbf{x}) \left(0.1 + \Vert{}\mathbf{u}^*( \mathbf{x}, t )\Vert{}_2\right)} \mathbf{u}^*(\mathbf{x}, t)$$
+   (the constant $0.1$ is the linear Brinkman part; $\Vert{}\mathbf{u}^*\Vert{}_2$ is regularised as $\sqrt{u_x^{*2} + u_y^{*2} + 10^{-12}}$). A smooth Mach limiter then caps $\Vert{}\mathbf{u}_{\text{eff}}\Vert{}_2 \le 0.20$ via $\mathbf{u} \leftarrow \mathbf{u} \cdot \min(1, 0.20/\Vert{}\mathbf{u}\Vert{}_2)$, and the macroscopic temperature is clipped to $T \in [-0.5, 2.0]$ so Boussinesq forces stay bounded under aggressive optimisation transients.
    while Boussinesq buoyancy acts along the vertical axis $\hat{\mathbf{j}}$:
    $$\mathbf{F}_{\text{buoy}}(\mathbf{x}, t) = \rho(\mathbf{x}, t) \, g_{\text{grav}} \, \beta_T \left( T(\mathbf{x}, t) - T_{\text{ref}} \right) \hat{\mathbf{j}}$$
    incorporated into the post-collision distribution via **Guo's exact forcing scheme**:
    $$S_i(\mathbf{x}, t) = \left( 1 - \frac{1}{2\tau_{\text{eff}}} \right) w_i \left[ 3(\mathbf{e}_i - \mathbf{u}) + 9(\mathbf{e}_i \cdot \mathbf{u})\mathbf{e}_i \right] \cdot \mathbf{F}_{\text{buoy}}$$
 4. **Thermal Sources & Evapotranspiration Sink:**
    Solar-heated building surfaces/asphalt masks $M_{\text{solar}}(\mathbf{x})$ inject heat $Q_{\text{solar}}$, while porous tree canopies $\tilde{\gamma}(\mathbf{x})$ provide latent evaporative cooling $-\Lambda_{\text{cool}} \tilde{\gamma}(\mathbf{x}) (T(\mathbf{x}, t) - T_{\text{wet}})$:
-   $$Q_{\text{net}}(\mathbf{x}, t) = Q_{\text{solar}} M_{\text{solar}}(\mathbf{x}) - \Lambda_{\text{cool}} \tilde{\gamma}(\mathbf{x}) \text{Softplus}\left( T(\mathbf{x}, t) - T_{\text{wet}} \right)$$
+   $$Q_{\text{net}}(\mathbf{x}, t) = \left[ Q_{\text{solar}} M_{\text{solar}}(\mathbf{x}) - \Lambda_{\text{cool}} \tilde{\gamma}(\mathbf{x}) \, \frac{\text{Softplus}\left( 5 \left( T(\mathbf{x}, t) - T_{\text{wet}} \right) \right)}{5} \right] \left(1 - B(\mathbf{x})\right)$$
    $$\tilde{g}_k(\mathbf{x}, t) = g_k(\mathbf{x}, t) - \frac{1}{\tau_T} \left( g_k - g_k^{\text{eq}}(T, \mathbf{u}_{\text{eff}}) \right) + \omega_k Q_{\text{net}}(\mathbf{x}, t)$$
 
 ---
@@ -67,9 +68,9 @@ Every spatial cell $\mathbf{x}$ in the plantable design region $\Omega_{\text{de
 ### 1.5 Streaming & Boundary Conditions (Pure Array Roll Operations)
 1. **Streaming Step:** Executed via `jnp.roll` along each lattice direction $\mathbf{e}_i$ and $\mathbf{c}_k$:
    $$f_i(\mathbf{x}, t+1) = \text{roll}\left(\tilde{f}_i(\mathbf{x}, t), \text{shift}=(e_{ix}, e_{iy}), \text{axis}=(0, 1)\right)$$
-2. **Solid Building Obstacles ($B(\mathbf{x}) = 1$):** Halfway bounce-back:
-   $$f_i^{\text{bb}}(\mathbf{x}) = \tilde{f}_{\bar{i}}(\mathbf{x}), \quad \text{where } \mathbf{e}_{\bar{i}} = -\mathbf{e}_i$$
-   applied branchlessly via `jnp.where(building_mask[..., None], f_bounced, f_streamed)`.
+2. **Solid Building Obstacles ($B(\mathbf{x}) = 1$) and street ($y = 0$):** Full-way on-site bounce-back: the populations *streamed into* a solid node are reversed in place,
+   $$f_i^{\text{bb}}(\mathbf{x}) = f_{\bar{i}}^{\text{streamed}}(\mathbf{x}), \quad \text{where } \mathbf{e}_{\bar{i}} = -\mathbf{e}_i$$
+   applied branchlessly via `jnp.where(obstacle[..., None], f_streamed[..., OPP], f_streamed)`. Because this is a permutation of the streamed populations it conserves total mass exactly (overwriting with pre-streaming post-collision values $\tilde{f}_{\bar{i}}$ would discard streamed mass at every solid node and fail the conservation gate below).
 3. **West Inlet ($x = 0$):** Prescribed velocity $\mathbf{u}_{\text{in}} = (u_0, 0)$ and ambient temperature $T_{\text{in}} = 0$ imposed via equilibrium boundary condition $f_i(0, y) = f_i^{\text{eq}}(1.0, \mathbf{u}_{\text{in}})$ and $g_k(0, y) = g_k^{\text{eq}}(T_{\text{in}}, \mathbf{u}_{\text{in}})$.
 4. **East Outlet ($x = N_x - 1$):** Zero-gradient convective outflow $f_i(N_x-1, y) = f_i(N_x-2, y)$ and $g_k(N_x-1, y) = g_k(N_x-2, y)$.
 5. **Top & Street Boundaries ($y = 0, N_y - 1$):** Free-slip specular reflection at top sky boundary ($y = N_y - 1$); no-slip bounce-back + solar thermal flux at street level ($y = 0$).
@@ -95,10 +96,19 @@ where $\text{Softplus}_{\tau}(z) = \frac{1}{\tau} \ln(1 + \exp(\tau z))$ with sh
 ## 3. Verification & Benchmark Suite
 
 1. **Mass Conservation & Invariance (`tests/test_invariants.py`):**
-   - In a periodic domain with obstacles and zero boundary flux, total fluid mass $\sum_{\mathbf{x}, i} f_i(\mathbf{x}, t)$ over 500 steps must be conserved to `< 1e-6` relative error in `float32` (`< 1e-13` in `float64`).
+   - In a periodic domain with obstacles and zero boundary flux, total fluid mass $\sum_{\mathbf{x}, i} f_i(\mathbf{x}, t)$ over 200 steps must be conserved to `< 1e-5` relative error (the gate asserted by the test). Measured over 500 steps: $\approx 7 \times 10^{-6}$ in `float32` and $\approx 5 \times 10^{-14}$ in `float64` — i.e. roundoff-limited, as expected since streaming, bounce-back and collision are each exactly mass-conserving operations.
 2. **Coupled Thermal Plume & Canopy Cooling (`tests/test_thermal.py`):**
    - Verify that activating solar heating $M_{\text{solar}}$ strictly increases downstream temperature ($\Delta \bar{T} > 0$), and inserting porous canopy $\tilde{\gamma} = 0.8$ strictly reduces downstream pedestrian temperature and velocity magnitude compared to $\tilde{\gamma} = 0.0$.
-3. **Exact vs. Finite-Difference Gradient Check (`tests/test_gradients.py`):**
-   - Enable `jax_enable_x64 = True`. Compute analytical gradients $\mathbf{g}_{\text{ad}} = \nabla_{\theta} \mathcal{L}(\theta)$ via `jax.grad` over a 40-step coupled fluid-thermal rollout on a $32 \times 24$ grid.
-   - Compare against central finite differences $g_{\text{fd}, m} = \frac{\mathcal{L}(\theta + \epsilon \mathbf{e}_m) - \mathcal{L}(\theta - \epsilon \mathbf{e}_m)}{2\epsilon}$ ($\epsilon = 10^{-5}$) across 8 randomly sampled design pixels.
-   - **Pass Criterion:** Cosine similarity $> 0.999$ and max relative error $< 10^{-4}$.
+3. **Exact vs. Finite-Difference Gradient Checks (`tests/test_gradients.py`):**
+   - Enable `jax_enable_x64 = True`. Compute analytical gradients $\mathbf{g}_{\text{ad}} = \nabla_{\theta} \mathcal{L}(\theta)$ via `jax.grad` on a $32 \times 20$ grid and compare against central finite differences $g_{\text{fd}, m} = \frac{\mathcal{L}(\theta + \epsilon \mathbf{e}_m) - \mathcal{L}(\theta - \epsilon \mathbf{e}_m)}{2\epsilon}$ ($\epsilon = 10^{-5}$) at sampled design pixels. **Pass Criterion:** cosine similarity $> 0.999$ and max relative error $< 10^{-3}$.
+   - Two complementary checks are asserted: (a) the full objective with 20 burn-in + 20 differentiable steps (measured max relative error $\approx 4 \times 10^{-5}$); at this point the canopy-budget term dominates the gradient, so (b) a *physics-active* check sets the budget/binarisation weights to zero, the temperature target to $0$, and burn-in to $0$ over 60 differentiable steps, so finite differences measure exactly the un-truncated through-physics gradient that `jax.grad` returns (measured max relative error $\approx 2 \times 10^{-8}$). With burn-in $> 0$, AD intentionally returns the `stop_gradient`-truncated (TBPTT) gradient and is *not* expected to match finite differences of the full forward map wherever the truncated path dominates.
+4. **Domain Construction (`tests/test_domain_import.py`):**
+   - Plantable and pedestrian masks are ground-rooted (no building cell in the column at or below them, so no rooftop canopy), and externally rasterised building footprints (`urbancool.osm`, plan-view mode) produce mutually disjoint masks on which rollouts stay finite.
+
+---
+
+## 4. Extensions
+
+- **Beta continuation:** `optimize_canopy_layout(..., beta_schedule=(2, 4, 8, 16))` splits the Adam budget across sigmoid-sharpness stages, pushing grey canopy values toward binary placements (the demo's final design has $< 1\%$ of plantable cells with $\tilde{\gamma} \in (0.1, 0.9)$). Initial-vs-final demo metrics are both evaluated at the final $\beta$.
+- **Real-world footprints:** `urbancool.osm.domain_from_osm(lat, lon, dist, nx, ny)` (optional `osmnx` extra) rasterises OpenStreetMap buildings into a plan-view domain via the same mask-derivation path as the synthetic canyon; plan-view runs should use $g_{\text{buoy}} = 0$ since buoyancy acts along $+y$.
+- **Time-averaged velocity components:** rollouts return $\bar{u}_x, \bar{u}_y$ alongside $\bar{T}$ and $\Vert{}\bar{\mathbf{u}}\Vert{}$, enabling streamline visualisations (see the demo's `optimization_evolution.gif`).

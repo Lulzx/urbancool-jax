@@ -18,6 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+osm = ["osmnx>=1.9"]
 
 [tool.setuptools.packages.find]
 include = ["urbancool*"]
