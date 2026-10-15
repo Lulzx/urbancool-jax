@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "urbancool-jax"
+version = "0.1.0"
+description = "End-to-end differentiable coupled fluid-thermal LBM engine and inverse urban microclimate topology optimizer in pure JAX"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "jax>=0.4.25",
+    "optax>=0.2.0",
+    "numpy>=1.26",
+    "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.setuptools.packages.find]
+include = ["urbancool*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
